@@ -1,0 +1,2313 @@
+<!--
+    ============================================================
+    KALKULATOR BIAYA 3D PRINTING - Anycubic Kobra X
+    ============================================================
+    Copyright (C) 2026 Sigit - HDTeam-Lab
+    License : GNU GPL v3.0
+    Version : 3.9.0
+    Changelog v3.9.0:
+      - NEW: Opsi biaya tambahan per produk (Dengan / Tanpa)
+             - "Dengan Biaya Tambahan": reject + packaging + stiker + switch
+             - "Tanpa Biaya Tambahan": hanya reject (% material) saja
+             - "Tanpa Semua": semua extra = 0
+      - NEW: kolom "Extra" di tabel menampilkan label mode
+      - NEW: badge mode di form cetakan
+      - NEW: export CSV/Excel/Print menyertakan kolom Mode Biaya
+      - FIX: migrateJob mengisi extraMode default 'full'
+    Changelog v3.8.2:
+      - FIX: event delegation untuk tombol Edit/Duplikat/Hapus
+      - FIX: migrateJob memastikan job.id valid
+    Changelog v3.8.1:
+      - FIX: purgeMinutes tersimpan & direstore
+      - FIX: normalisasi jam/menit saat edit
+      - FIX: total row print 12 kolom
+      - FIX: @page duplikat dihapus
+      - FIX: escape id di onclick (XSS hardening)
+    ============================================================
+-->
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta name="author" content="Sigit - HDTeam-Lab">
+<title>Kalkulator Biaya 3D Printing - Anycubic Kobra X</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+    body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f3f4f6; }
+    input[type="number"] { -moz-appearance: textfield; }
+    input[type="number"]::-webkit-outer-spin-button,
+    input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+
+    @keyframes slideIn { from { transform: translateX(100%); opacity: 0; } to { transform: translateX(0); opacity: 1; } }
+    .toast-anim { animation: slideIn 0.3s ease-out; }
+
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    @keyframes scaleIn { from { transform: scale(0.95); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+    .modal-backdrop { animation: fadeIn 0.2s ease-out; }
+    .modal-content { animation: scaleIn 0.25s ease-out; }
+
+    .sortable { cursor: pointer; user-select: none; }
+    .sortable:hover { background-color: #e5e7eb; }
+    .sort-indicator { font-size: 10px; margin-left: 2px; opacity: 0.5; }
+    .sort-indicator.active { opacity: 1; color: #2563eb; }
+
+    .filament-badge {
+        display: inline-block; background: #ede9fe; color: #6d28d9;
+        padding: 1px 6px; border-radius: 8px; font-size: 10px;
+        margin: 1px 2px 1px 0; white-space: nowrap;
+    }
+
+    .extra-badge {
+        display: inline-block;
+        padding: 2px 8px;
+        border-radius: 9999px;
+        font-size: 10px;
+        font-weight: 600;
+        white-space: nowrap;
+    }
+    .extra-badge-full {
+        background: #fee2e2; color: #991b1b;
+    }
+    .extra-badge-reject-only {
+        background: #fef3c7; color: #92400e;
+    }
+    .extra-badge-none {
+        background: #e5e7eb; color: #4b5563;
+    }
+
+    .settings-dirty {
+        border-color: #f59e0b !important;
+        box-shadow: 0 0 0 2px rgba(245, 158, 11, 0.2);
+    }
+
+    .panel-header {
+        cursor: pointer;
+        user-select: none;
+        transition: background-color 0.2s;
+    }
+    .panel-header:hover {
+        background-color: rgba(0, 0, 0, 0.02);
+    }
+    .panel-toggle-icon {
+        transition: transform 0.3s ease;
+        display: inline-block;
+        font-size: 12px;
+    }
+    .panel-toggle-icon.collapsed {
+        transform: rotate(-90deg);
+    }
+    .panel-body {
+        transition: max-height 0.35s ease, opacity 0.25s ease, padding 0.25s ease;
+        overflow: hidden;
+    }
+    .panel-body.collapsed {
+        max-height: 0 !important;
+        opacity: 0;
+        padding-top: 0 !important;
+        padding-bottom: 0 !important;
+    }
+    .panel-collapsed-summary {
+        display: none;
+        font-size: 12px;
+        color: #6b7280;
+        margin-left: 8px;
+        font-weight: normal;
+    }
+    .panel-collapsed .panel-collapsed-summary {
+        display: inline;
+    }
+
+    .settings-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+        gap: 12px;
+        max-width: 70%;
+    }
+    @media (max-width: 768px) {
+        .settings-grid {
+            max-width: 100%;
+            grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+        }
+    }
+
+    /* Opsi mode biaya tambahan */
+    .extra-mode-option {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        padding: 10px 12px;
+        border: 2px solid #e5e7eb;
+        border-radius: 8px;
+        cursor: pointer;
+        transition: all 0.15s ease;
+        background: #fff;
+    }
+    .extra-mode-option:hover {
+        border-color: #93c5fd;
+        background: #f0f9ff;
+    }
+    .extra-mode-option.selected {
+        border-color: #2563eb;
+        background: #eff6ff;
+        box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+    }
+    .extra-mode-option input[type="radio"] {
+        display: none;
+    }
+    .extra-mode-option .title {
+        font-weight: 600;
+        font-size: 13px;
+        color: #1f2937;
+    }
+    .extra-mode-option .desc {
+        font-size: 11px;
+        color: #6b7280;
+        line-height: 1.35;
+    }
+
+    #printArea { display: none; }
+
+    @media print {
+        .no-print { display: none !important; visibility: hidden !important; }
+    }
+
+    @media print {
+        * {
+            -webkit-print-color-adjust: exact !important;
+            print-color-adjust: exact !important;
+            color-adjust: exact !important;
+        }
+
+        html, body {
+            background: white !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            width: 100% !important;
+            height: auto !important;
+            overflow: visible !important;
+        }
+
+        body > *:not(#printArea) {
+            display: none !important;
+            visibility: hidden !important;
+        }
+
+        #printArea {
+            display: block !important;
+            visibility: visible !important;
+            width: 100% !important;
+            max-width: 100% !important;
+            margin: 0 !important;
+            padding: 8mm !important;
+            box-sizing: border-box !important;
+            font-size: 9pt !important;
+            color: #000 !important;
+            background: white !important;
+        }
+
+        #printArea .print-header {
+            text-align: center;
+            margin-bottom: 10px;
+        }
+        #printArea .print-header h1 {
+            font-size: 14pt;
+            font-weight: bold;
+            margin: 0 0 3px 0;
+        }
+        #printArea .print-header p {
+            font-size: 8pt;
+            color: #333;
+            margin: 0;
+        }
+
+        #printArea table {
+            width: 100% !important;
+            max-width: 100% !important;
+            border-collapse: collapse !important;
+            font-size: 7.5pt !important;
+            table-layout: fixed !important;
+            page-break-inside: auto !important;
+            word-wrap: break-word !important;
+            overflow-wrap: break-word !important;
+        }
+
+        #printArea thead {
+            display: table-header-group !important;
+        }
+
+        #printArea tfoot {
+            display: table-footer-group !important;
+        }
+
+        #printArea th,
+        #printArea td {
+            border: 1px solid #333 !important;
+            padding: 2px 3px !important;
+            color: #000 !important;
+            background-color: transparent;
+            word-wrap: break-word !important;
+            overflow-wrap: break-word !important;
+            word-break: break-word !important;
+            font-size: 7.5pt !important;
+            line-height: 1.15 !important;
+        }
+
+        #printArea th {
+            background: #e5e7eb !important;
+            font-weight: bold !important;
+            text-align: center !important;
+            font-size: 7.5pt !important;
+        }
+
+        #printArea .total-row {
+            background: #f3f4f6 !important;
+            font-weight: bold !important;
+        }
+
+        #printArea tr {
+            page-break-inside: avoid !important;
+            break-inside: avoid !important;
+        }
+
+        #printArea .text-right { text-align: right !important; }
+        #printArea .text-center { text-align: center !important; }
+
+        #printArea .settings-note {
+            margin-top: 8px;
+            font-size: 7.5pt;
+            line-height: 1.4;
+            page-break-inside: avoid;
+            break-inside: avoid;
+        }
+
+        #printArea .footer-note {
+            margin-top: 8px;
+            font-size: 7pt;
+            color: #555;
+            text-align: center;
+        }
+
+        @page {
+            size: A4 landscape;
+            margin: 8mm;
+        }
+    }
+
+    @media print and (max-width: 600px) {
+        #printArea {
+            padding: 4mm !important;
+            font-size: 6.5pt !important;
+        }
+        #printArea table { font-size: 6.5pt !important; }
+        #printArea th, #printArea td { font-size: 6.5pt !important; padding: 1.5px 2px !important; }
+        #printArea .print-header h1 { font-size: 11pt !important; }
+        #printArea .print-header p { font-size: 7pt !important; }
+    }
+</style>
+</head>
+<body class="p-4 md:p-8">
+
+<!-- ============================================= -->
+<!-- LOGIN SCREEN -->
+<!-- ============================================= -->
+<div id="loginScreen" class="fixed inset-0 bg-gradient-to-br from-blue-600 to-indigo-800 flex items-center justify-center z-50 p-4">
+    <div class="bg-white rounded-2xl shadow-2xl p-8 w-full max-w-md">
+        <div class="text-center mb-6">
+            <div class="text-5xl mb-2">🖨️</div>
+            <h1 class="text-2xl font-bold text-gray-800">Kalkulator 3D Printing</h1>
+            <p class="text-sm text-gray-500 mt-1">Anycubic Kobra X Edition</p>
+        </div>
+
+        <form id="loginForm" class="space-y-4" autocomplete="off">
+            <div>
+                <label class="block text-sm font-medium text-gray-600 mb-1">Username</label>
+                <input type="text" id="loginUsername" placeholder=""
+                    class="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none"
+                    autocomplete="off" required>
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-600 mb-1">Password</label>
+                <input type="password" id="loginPassword" placeholder=""
+                    class="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none"
+                    autocomplete="new-password" required>
+            </div>
+            <div id="loginError" class="hidden text-red-500 text-sm bg-red-50 p-2 rounded border border-red-200">
+                ❌ Username atau password salah!
+            </div>
+            <button type="submit" id="loginBtn" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-lg transition shadow-lg disabled:opacity-60">
+                🔐 Masuk
+            </button>
+        </form>
+
+        <div class="mt-6 pt-4 border-t text-center text-xs text-gray-400">
+            <p>© 2026 Sigit - HDTeam-Lab | GPL-3.0 | v3.9.0</p>
+        </div>
+    </div>
+</div>
+
+<!-- ============================================= -->
+<!-- MODAL: GANTI PASSWORD -->
+<!-- ============================================= -->
+<div id="changePasswordModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-[70] flex items-center justify-center p-4 modal-backdrop">
+    <div class="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-md modal-content">
+        <div class="flex justify-between items-center mb-4 border-b pb-3">
+            <h2 class="text-xl font-bold text-gray-800">🔑 Ganti Password</h2>
+            <button type="button" onclick="closeChangePasswordModal()" class="text-gray-400 hover:text-gray-600 text-2xl leading-none">&times;</button>
+        </div>
+
+        <form id="changePasswordForm" class="space-y-4">
+            <div>
+                <label class="block text-sm font-medium text-gray-600 mb-1">Password Lama <span class="text-red-500">*</span></label>
+                <input type="password" id="oldPassword" class="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none" required>
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-600 mb-1">Password Baru <span class="text-red-500">*</span></label>
+                <input type="password" id="newPassword" placeholder="Minimal 4 karakter" class="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none" required minlength="4">
+            </div>
+            <div>
+                <label class="block text-sm font-medium text-gray-600 mb-1">Konfirmasi Password Baru <span class="text-red-500">*</span></label>
+                <input type="password" id="confirmPassword" placeholder="Ulangi password baru" class="w-full border border-gray-300 rounded-lg p-3 focus:ring-2 focus:ring-blue-500 outline-none" required minlength="4">
+            </div>
+            <div id="changePwMessage" class="hidden text-sm p-2 rounded border"></div>
+            <div class="flex gap-2 pt-2">
+                <button type="button" onclick="closeChangePasswordModal()" class="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-700 font-bold py-2 px-4 rounded-lg transition">Batal</button>
+                <button type="submit" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg transition">💾 Simpan</button>
+            </div>
+        </form>
+    </div>
+</div>
+
+<!-- ============================================= -->
+<!-- MAIN APP -->
+<!-- ============================================= -->
+<div id="mainApp" class="max-w-7xl mx-auto hidden">
+
+    <!-- Header -->
+    <div class="text-center mb-8 relative no-print">
+        <h1 class="text-3xl font-bold text-gray-800">🖨️ Kalkulator Biaya 3D Printing</h1>
+        <p class="text-gray-500 mt-2">Anycubic Kobra X | Multi-Filamen Edition</p>
+
+        <div class="mt-4 md:mt-0 md:absolute md:top-0 md:right-0 flex flex-wrap gap-2 justify-center">
+            <button type="button" onclick="toggleAllPanels()" id="toggleAllBtn" class="bg-indigo-500 hover:bg-indigo-600 text-white text-xs px-4 py-2 rounded-full transition shadow">🔽 Sembunyikan Panel</button>
+            <button type="button" onclick="exportCSV()" class="bg-green-500 hover:bg-green-600 text-white text-xs px-4 py-2 rounded-full transition shadow">📥 CSV</button>
+            <button type="button" onclick="exportExcel()" class="bg-emerald-600 hover:bg-emerald-700 text-white text-xs px-4 py-2 rounded-full transition shadow">📊 Excel</button>
+            <button type="button" onclick="printTable()" class="bg-purple-600 hover:bg-purple-700 text-white text-xs px-4 py-2 rounded-full transition shadow">🖨️ Print</button>
+            <button type="button" onclick="openChangePasswordModal()" class="bg-amber-500 hover:bg-amber-600 text-white text-xs px-4 py-2 rounded-full transition shadow">🔑 Password</button>
+            <button type="button" onclick="clearAllData()" class="bg-red-500 hover:bg-red-600 text-white text-xs px-4 py-2 rounded-full transition shadow">🗑️ Hapus Semua</button>
+            <button type="button" onclick="logout()" class="bg-gray-600 hover:bg-gray-700 text-white text-xs px-4 py-2 rounded-full transition shadow">🚪 Logout</button>
+        </div>
+    </div>
+
+    <!-- Info user -->
+    <div class="bg-gradient-to-r from-blue-500 to-indigo-500 text-white text-sm rounded-lg p-3 mb-6 flex justify-between items-center no-print">
+        <span>👤 Login sebagai: <strong id="loggedUser">admin</strong></span>
+        <span class="text-xs opacity-90">© 2026 Sigit - HDTeam-Lab | GPL-3.0 | v3.9.0</span>
+    </div>
+
+    <!-- Panel: Master Filamen -->
+    <div class="bg-white rounded-lg shadow-md mb-6 border-t-4 border-purple-500 no-print overflow-hidden" id="panelFilament">
+        <div class="panel-header p-5 flex justify-between items-center" onclick="togglePanel('panelFilament')">
+            <h2 class="text-xl font-semibold text-gray-700 flex items-center">
+                <span class="panel-toggle-icon mr-2" id="iconPanelFilament">▼</span>
+                🧵 Daftar Filamen (Master)
+                <span class="panel-collapsed-summary" id="summaryFilament"></span>
+            </h2>
+            <button type="button" class="text-xs text-blue-600 hover:text-blue-800 bg-blue-50 hover:bg-blue-100 px-3 py-1 rounded-full transition" onclick="event.stopPropagation(); togglePanel('panelFilament')">
+                <span class="toggle-label">Sembunyikan</span>
+            </button>
+        </div>
+        <div class="panel-body px-6 pb-6" id="bodyPanelFilament">
+            <form id="filamentForm" class="grid grid-cols-1 md:grid-cols-12 gap-2 mb-4">
+                <div class="md:col-span-5">
+                    <input type="text" id="filamentName" placeholder="Nama filamen (cth: PLA Merah Elegoo)" maxlength="60"
+                        class="w-full border border-gray-300 rounded p-2 focus:ring-purple-500 focus:border-purple-500" required>
+                </div>
+                <div class="md:col-span-4">
+                    <input type="text" inputmode="decimal" id="filamentPrice" placeholder="Harga per kg (Rp)"
+                        class="w-full border border-gray-300 rounded p-2 focus:ring-purple-500 focus:border-purple-500" required>
+                </div>
+                <div class="md:col-span-3">
+                    <button type="submit" class="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-2 px-4 rounded transition">
+                        ➕ Tambah Filamen
+                    </button>
+                </div>
+            </form>
+
+            <div id="filamentList" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2"></div>
+            <div id="filamentEmpty" class="text-center text-gray-400 text-sm py-4 hidden">
+                Belum ada filamen. Tambahkan minimal satu untuk mulai menghitung.
+            </div>
+        </div>
+    </div>
+
+    <!-- Panel: Pengaturan Dasar -->
+    <div class="bg-white rounded-lg shadow-md mb-6 no-print overflow-hidden" id="panelSettings">
+        <div class="panel-header p-5 flex justify-between items-center" onclick="togglePanel('panelSettings')">
+            <h2 class="text-xl font-semibold text-gray-700 flex items-center">
+                <span class="panel-toggle-icon mr-2" id="iconPanelSettings">▼</span>
+                ⚙️ Pengaturan Dasar & Margin Jual
+                <span class="panel-collapsed-summary" id="summarySettings"></span>
+            </h2>
+            <div class="flex items-center gap-2" onclick="event.stopPropagation();">
+                <span id="settingsDirtyBadge" class="hidden text-xs bg-amber-100 text-amber-700 px-2 py-1 rounded-full font-medium">● Belum disimpan</span>
+                <button type="button" id="saveSettingsBtn" onclick="saveSettingsManual()" class="bg-blue-600 hover:bg-blue-700 text-white text-xs px-4 py-2 rounded transition font-bold">
+                    💾 Simpan Pengaturan
+                </button>
+                <button type="button" class="text-xs text-blue-600 hover:text-blue-800 bg-blue-50 hover:bg-blue-100 px-3 py-1 rounded-full transition" onclick="togglePanel('panelSettings')">
+                    <span class="toggle-label">Sembunyikan</span>
+                </button>
+            </div>
+        </div>
+        <div class="panel-body px-6 pb-6" id="bodyPanelSettings">
+
+            <div class="settings-grid">
+                <div>
+                    <label class="block text-sm font-medium text-gray-600 mb-1">Tarif Listrik (Rp/kWh)</label>
+                    <input type="text" inputmode="decimal" id="electricityTariff" value="1500" class="w-full border border-gray-300 rounded p-2 focus:ring-blue-500 focus:border-blue-500 settings-input">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-600 mb-1">Daya Printer (kW)</label>
+                    <input type="text" inputmode="decimal" id="machinePower" value="0.35" class="w-full border border-gray-300 rounded p-2 focus:ring-blue-500 focus:border-blue-500 settings-input">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-600 mb-1">Depresiasi Mesin (Rp/jam)</label>
+                    <input type="text" inputmode="decimal" id="depreciationRate" value="1500" class="w-full border border-gray-300 rounded p-2 focus:ring-blue-500 focus:border-blue-500 settings-input">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-600 mb-1">Margin Minimal (x)</label>
+                    <input type="text" inputmode="decimal" id="marginMin" value="2" class="w-full border border-gray-300 rounded p-2 focus:ring-blue-500 focus:border-blue-500 settings-input">
+                </div>
+                <div>
+                    <label class="block text-sm font-medium text-gray-600 mb-1">Margin Maksimal (x)</label>
+                    <input type="text" inputmode="decimal" id="marginMax" value="3" class="w-full border border-gray-300 rounded p-2 focus:ring-blue-500 focus:border-blue-500 settings-input">
+                </div>
+            </div>
+
+            <div class="mt-6 pt-4 border-t-2 border-dashed border-orange-300">
+                <h3 class="text-lg font-semibold text-orange-700 mb-3">📦 Biaya Tambahan (Packaging & Handling)</h3>
+                <p class="text-xs text-gray-500 mb-3">
+                    Nilai default per cetakan. Pada form <strong>Tambah Cetakan</strong>, Anda bisa memilih apakah produk memakai biaya tambahan ini, hanya reject, atau tanpa biaya tambahan sama sekali.
+                </p>
+                <div class="settings-grid">
+                    <div>
+                        <label class="block text-sm font-medium text-gray-600 mb-1">Packaging (Rp)</label>
+                        <input type="text" inputmode="decimal" id="costPackaging" value="3000"
+                            class="w-full border border-orange-300 rounded p-2 focus:ring-orange-500 focus:border-orange-500 settings-input">
+                        <p class="text-xs text-gray-400 mt-1">Bubblewrap, freebies, mailer, dll.</p>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-600 mb-1">Stiker & Tinta (Rp)</label>
+                        <input type="text" inputmode="decimal" id="costSticker" value="1000"
+                            class="w-full border border-orange-300 rounded p-2 focus:ring-orange-500 focus:border-orange-500 settings-input">
+                        <p class="text-xs text-gray-400 mt-1">Label/stiker produk & tinta cetak.</p>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-600 mb-1">Switch/Gantungan (Rp)</label>
+                        <input type="text" inputmode="decimal" id="costSwitch" value="1000"
+                            class="w-full border border-orange-300 rounded p-2 focus:ring-orange-500 focus:border-orange-500 settings-input">
+                        <p class="text-xs text-gray-400 mt-1">Aksesoris switch/gantungan.</p>
+                    </div>
+                    <div>
+                        <label class="block text-sm font-medium text-gray-600 mb-1">Reject / Gagal Cetak (%)</label>
+                        <input type="text" inputmode="decimal" id="rejectPercent" value="10"
+                            class="w-full border border-orange-300 rounded p-2 focus:ring-orange-500 focus:border-orange-500 settings-input">
+                        <p class="text-xs text-gray-400 mt-1">% dari biaya material (default 10% = Rp 2.000).</p>
+                    </div>
+                </div>
+                <div class="mt-3 bg-orange-50 border border-orange-200 rounded p-3 text-xs text-orange-800">
+                    💡 <strong>Preview contoh (material Rp 20.000):</strong>
+                    Reject <span id="previewReject">Rp 2.000</span> +
+                    Packaging <span id="previewPackaging">Rp 3.000</span> +
+                    Stiker <span id="previewSticker">Rp 1.000</span> +
+                    Switch <span id="previewSwitch">Rp 1.000</span>
+                    = <strong id="previewExtraTotal">Rp 7.000</strong> per cetakan
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Panel: Form Cetakan -->
+    <div class="bg-white rounded-lg shadow-md p-6 mb-6 border-t-4 border-blue-500 no-print">
+        <h2 id="formTitle" class="text-xl font-semibold text-gray-700 mb-4 border-b pb-2">➕ Tambah Cetakan</h2>
+
+        <form id="jobForm" class="space-y-4">
+            <input type="hidden" id="editingId" value="">
+
+            <div class="grid grid-cols-1 md:grid-cols-12 gap-4">
+                <div class="md:col-span-5">
+                    <label class="block text-sm font-medium text-gray-600 mb-1">Nama File / Cetakan <span class="text-red-500">*</span></label>
+                    <input type="text" id="jobName" placeholder="Contoh: Bracket HP 3 Warna" class="w-full border border-gray-300 rounded p-2 focus:ring-blue-500 focus:border-blue-500" required maxlength="120">
+                </div>
+                <div class="md:col-span-2">
+                    <label class="block text-sm font-medium text-gray-600 mb-1">Jumlah Warna</label>
+                    <select id="colorCount" class="w-full border border-gray-300 rounded p-2 focus:ring-blue-500 focus:border-blue-500">
+                        <option value="1">1 Warna</option>
+                        <option value="2">2 Warna</option>
+                        <option value="3">3 Warna</option>
+                        <option value="4">4 Warna</option>
+                        <option value="5+">5+ Warna</option>
+                    </select>
+                </div>
+                <div class="md:col-span-2 flex gap-2">
+                    <div class="w-1/2">
+                        <label class="block text-sm font-medium text-gray-600 mb-1">Jam <span class="text-red-500">*</span></label>
+                        <input type="text" inputmode="decimal" id="jobHours" placeholder="1" class="w-full border border-gray-300 rounded p-2 focus:ring-blue-500 focus:border-blue-500" required>
+                    </div>
+                    <div class="w-1/2">
+                        <label class="block text-sm font-medium text-gray-600 mb-1">Menit <span class="text-red-500">*</span></label>
+                        <input type="text" inputmode="decimal" id="jobMinutes" placeholder="15" class="w-full border border-gray-300 rounded p-2 focus:ring-blue-500 focus:border-blue-500" required>
+                    </div>
+                </div>
+                <div class="md:col-span-3">
+                    <label class="block text-sm font-medium text-gray-600 mb-1">Waktu Purge Total (Menit)</label>
+                    <input type="text" inputmode="decimal" id="purgeMinutes" placeholder="0" value="0" class="w-full border border-gray-300 rounded p-2 focus:ring-blue-500 focus:border-blue-500">
+                </div>
+            </div>
+
+            <!-- ============================================= -->
+            <!-- OPSI BIAYA TAMBAHAN PER PRODUK -->
+            <!-- ============================================= -->
+            <div class="border-t pt-4">
+                <label class="block text-sm font-medium text-gray-700 mb-2">📦 Biaya Tambahan Produk Ini <span class="text-red-500">*</span></label>
+                <div class="grid grid-cols-1 md:grid-cols-3 gap-3" id="extraModeGroup">
+
+                    <label class="extra-mode-option selected" data-mode="full">
+                        <input type="radio" name="extraMode" value="full" checked>
+                        <span class="title">✅ Dengan Biaya Tambahan</span>
+                        <span class="desc">Reject + Packaging + Stiker + Switch (default pengaturan)</span>
+                    </label>
+
+                    <label class="extra-mode-option" data-mode="reject-only">
+                        <input type="radio" name="extraMode" value="reject-only">
+                        <span class="title">⚠️ Hanya Reject</span>
+                        <span class="desc">Hanya biaya reject (% material). Tanpa packaging/stiker/switch.</span>
+                    </label>
+
+                    <label class="extra-mode-option" data-mode="none">
+                        <input type="radio" name="extraMode" value="none">
+                        <span class="title">🚫 Tanpa Biaya Tambahan</span>
+                        <span class="desc">Tidak ada reject, packaging, stiker, maupun switch.</span>
+                    </label>
+
+                </div>
+                <p class="text-xs text-gray-500 mt-2">
+                    💡 Pilih <strong>Dengan Biaya Tambahan</strong> untuk produk siap jual (packing lengkap).
+                    Pilih <strong>Hanya Reject</strong> untuk produk yang butuh toleransi gagal cetak tanpa packing.
+                    Pilih <strong>Tanpa Biaya Tambahan</strong> untuk produk yang langsung diserahkan tanpa packing/gantungan.
+                </p>
+            </div>
+
+            <div class="border-t pt-4">
+                <div class="flex justify-between items-center mb-2">
+                    <label class="block text-sm font-medium text-gray-700">🧵 Filamen yang Digunakan <span class="text-red-500">*</span></label>
+                    <button type="button" onclick="addFilamentRowForm()" class="bg-purple-500 hover:bg-purple-600 text-white text-xs px-3 py-1 rounded-full transition">
+                        ➕ Tambah Filamen
+                    </button>
+                </div>
+                <div id="filamentRows" class="space-y-2"></div>
+                <p class="text-xs text-gray-500 mt-2">💡 Setiap baris = satu filamen (jenis/merk berbeda). Berat + purge dikalikan harga filamen masing-masing.</p>
+            </div>
+
+            <div class="flex gap-2 pt-2">
+                <button type="submit" id="submitBtn" class="flex-1 md:flex-none md:w-64 bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded transition">
+                    ➕ Tambah ke Tabel
+                </button>
+                <button type="button" id="cancelEditBtn" onclick="cancelEdit()" class="hidden bg-gray-300 hover:bg-gray-400 text-gray-800 font-bold py-2 px-4 rounded transition">
+                    ✖ Batal
+                </button>
+            </div>
+        </form>
+    </div>
+
+    <!-- Panel: Tabel -->
+    <div class="bg-white rounded-lg shadow-md overflow-hidden mb-6">
+        <div class="p-6 border-b flex flex-wrap justify-between items-center gap-4 no-print">
+            <h2 class="text-xl font-semibold text-gray-700">📊 Rekap Kalkulasi Biaya</h2>
+            <div class="flex items-center gap-3">
+                <input type="text" id="searchBox" placeholder="🔍 Cari cetakan..." class="border border-gray-300 rounded p-2 text-sm focus:ring-blue-500 focus:border-blue-500">
+                <div class="text-sm text-gray-500 bg-gray-100 px-3 py-1 rounded-full" id="tableInfo">0 data</div>
+            </div>
+        </div>
+
+        <div class="overflow-x-auto">
+            <table id="mainTable" class="w-full text-sm text-left text-gray-600">
+                <thead class="text-xs text-gray-700 uppercase bg-gray-100">
+                    <tr>
+                        <th class="px-3 py-3">No</th>
+                        <th class="px-3 py-3 sortable" data-sort="name">Nama Cetakan <span class="sort-indicator" data-ind="name"></span></th>
+                        <th class="px-3 py-3 text-center">Warna</th>
+                        <th class="px-3 py-3">Filamen</th>
+                        <th class="px-3 py-3 text-right sortable" data-sort="weight">Total Berat <span class="sort-indicator" data-ind="weight"></span></th>
+                        <th class="px-3 py-3 text-right sortable" data-sort="time">Waktu <span class="sort-indicator" data-ind="time"></span></th>
+                        <th class="px-3 py-3 text-right">Material</th>
+                        <th class="px-3 py-3 text-right">Listrik</th>
+                        <th class="px-3 py-3 text-right">Mesin</th>
+                        <th class="px-3 py-3 text-right sortable" data-sort="extra">Biaya Tambahan <span class="sort-indicator" data-ind="extra"></span></th>
+                        <th class="px-3 py-3 text-right sortable" data-sort="total">Total Biaya <span class="sort-indicator" data-ind="total"></span></th>
+                        <th class="px-3 py-3 text-right sortable" data-sort="sell">Estimasi Jual <span class="sort-indicator" data-ind="sell"></span></th>
+                        <th class="px-3 py-3 text-center col-action">Aksi</th>
+                    </tr>
+                </thead>
+                <tbody id="tableBody"></tbody>
+            </table>
+        </div>
+
+        <div id="pagination" class="p-4 border-t flex justify-between items-center bg-gray-50 no-print"></div>
+        <div id="emptyState" class="p-8 text-center text-gray-400 hidden">
+            Belum ada data cetakan. Silakan tambahkan cetakan di atas.
+        </div>
+    </div>
+
+    <div class="bg-blue-50 border-l-4 border-blue-400 p-4 text-sm text-blue-800 no-print">
+        <p class="font-bold">💾 Info Penyimpanan & Lisensi:</p>
+        <p>Data disimpan di <code>localStorage</code> browser. Password di-hash SHA-256. Aplikasi dilisensikan di bawah <strong>GNU GPL v3.0</strong>. Author: <strong>Sigit - HDTeam-Lab (2026)</strong>.</p>
+    </div>
+</div>
+
+<div id="toastContainer" class="fixed top-4 right-4 z-[80] space-y-2 no-print"></div>
+<div id="printArea"></div>
+
+<script>
+/* ============================================================
+   KALKULATOR 3D PRINTING v3.9.0
+   Author: Sigit - HDTeam-Lab | GPL-3.0
+   ============================================================ */
+document.addEventListener('DOMContentLoaded', function () {
+
+    // ==================== KONFIGURASI AUTH ====================
+    const AUTH_USERNAME = 'admin';
+    const DEFAULT_PASSWORD = 'admin';
+    const PASSWORD_KEY = 'kobraX_password_hash';
+    const LEGACY_PASSWORD_KEY = 'kobraX_password';
+    const SESSION_KEY = 'kobraX_session';
+    const SALT = 'kobraX_salt_2026';
+
+    async function hashPassword(pw) {
+        const data = pw + SALT;
+        if (window.crypto && crypto.subtle) {
+            try {
+                const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(data));
+                return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+            } catch (e) {}
+        }
+        let h = 0;
+        for (let i = 0; i < data.length; i++) h = ((h << 5) - h + data.charCodeAt(i)) | 0;
+        return 'fb_' + Math.abs(h).toString(16);
+    }
+
+    async function getActiveHash() {
+        const legacy = localStorage.getItem(LEGACY_PASSWORD_KEY);
+        if (legacy !== null) {
+            const h = await hashPassword(legacy);
+            localStorage.setItem(PASSWORD_KEY, h);
+            localStorage.removeItem(LEGACY_PASSWORD_KEY);
+            return h;
+        }
+        return localStorage.getItem(PASSWORD_KEY);
+    }
+
+    async function verifyPassword(input) {
+        const stored = await getActiveHash();
+        if (stored === null) return input === DEFAULT_PASSWORD;
+        return (await hashPassword(input)) === stored;
+    }
+
+    async function setActivePassword(newPw) {
+        localStorage.setItem(PASSWORD_KEY, await hashPassword(newPw));
+    }
+
+    // ==================== STATE ====================
+    let jobs = [];
+    let filaments = [];
+    let currentPage = 1;
+    let searchQuery = '';
+    let sortKey = '';
+    let sortDir = 'asc';
+    let isInitialized = false;
+    let settingsDirty = false;
+    const rowsPerPage = 25;
+
+    const STORAGE_KEY = 'anycubicKobraX_printJobs';
+    const SETTINGS_KEY = 'anycubicKobraX_settings';
+    const FILAMENTS_KEY = 'anycubicKobraX_filaments';
+    const PANEL_STATE_KEY = 'anycubicKobraX_panelState';
+
+    const EXTRA_MODE_LABELS = {
+        'full': 'Dengan Biaya Tambahan',
+        'reject-only': 'Hanya Reject',
+        'none': 'Tanpa Biaya Tambahan'
+    };
+    const EXTRA_MODE_SHORT = {
+        'full': 'Lengkap',
+        'reject-only': 'Reject saja',
+        'none': 'Tanpa extra'
+    };
+
+    const formatter = new Intl.NumberFormat('id-ID', {
+        style: 'currency', currency: 'IDR', minimumFractionDigits: 0, maximumFractionDigits: 0
+    });
+
+    // ==================== PANEL STATE ====================
+    let panelState = {
+        panelFilament: false,
+        panelSettings: false
+    };
+
+    function loadPanelState() {
+        try {
+            const raw = localStorage.getItem(PANEL_STATE_KEY);
+            if (raw) {
+                const s = JSON.parse(raw);
+                if (typeof s.panelFilament === 'boolean') panelState.panelFilament = s.panelFilament;
+                if (typeof s.panelSettings === 'boolean') panelState.panelSettings = s.panelSettings;
+            }
+        } catch (e) {}
+    }
+
+    function savePanelState() {
+        try { localStorage.setItem(PANEL_STATE_KEY, JSON.stringify(panelState)); } catch (e) {}
+    }
+
+    function togglePanel(panelId) {
+        const isCollapsed = !panelState[panelId];
+        panelState[panelId] = isCollapsed;
+        applyPanelState(panelId);
+        savePanelState();
+        updateToggleAllButton();
+    }
+    window.togglePanel = togglePanel;
+
+    function applyPanelState(panelId) {
+        const panel = document.getElementById(panelId);
+        if (!panel) return;
+        const body = panel.querySelector('.panel-body');
+        const icon = panel.querySelector('.panel-toggle-icon');
+        const btnLabel = panel.querySelector('.toggle-label');
+        const isCollapsed = panelState[panelId];
+
+        if (isCollapsed) {
+            panel.classList.add('panel-collapsed');
+            body.classList.add('collapsed');
+            if (icon) icon.classList.add('collapsed');
+            if (btnLabel) btnLabel.textContent = 'Tampilkan';
+        } else {
+            panel.classList.remove('panel-collapsed');
+            body.classList.remove('collapsed');
+            if (icon) icon.classList.remove('collapsed');
+            if (btnLabel) btnLabel.textContent = 'Sembunyikan';
+        }
+
+        updatePanelSummary(panelId);
+    }
+
+    function updatePanelSummary(panelId) {
+        if (panelId === 'panelFilament') {
+            const summary = document.getElementById('summaryFilament');
+            if (summary) {
+                summary.textContent = `(${filaments.length} item)`;
+            }
+        } else if (panelId === 'panelSettings') {
+            const summary = document.getElementById('summarySettings');
+            if (summary) {
+                const tariff = document.getElementById('electricityTariff').value || '0';
+                const power = document.getElementById('machinePower').value || '0';
+                const margin = `${document.getElementById('marginMin').value || '0'}x – ${document.getElementById('marginMax').value || '0'}x`;
+                summary.textContent = `(Tarif ${tariff} | Daya ${power} kW | Margin ${margin})`;
+            }
+        }
+    }
+
+    function toggleAllPanels() {
+        const allCollapsed = panelState.panelFilament && panelState.panelSettings;
+        const newState = !allCollapsed;
+        panelState.panelFilament = newState;
+        panelState.panelSettings = newState;
+        applyPanelState('panelFilament');
+        applyPanelState('panelSettings');
+        savePanelState();
+        updateToggleAllButton();
+        showToast(newState ? 'Panel disembunyikan.' : 'Panel ditampilkan.', 'info');
+    }
+    window.toggleAllPanels = toggleAllPanels;
+
+    function updateToggleAllButton() {
+        const btn = document.getElementById('toggleAllBtn');
+        if (!btn) return;
+        const allCollapsed = panelState.panelFilament && panelState.panelSettings;
+        if (allCollapsed) {
+            btn.innerHTML = '🔼 Tampilkan Panel';
+            btn.classList.remove('bg-indigo-500', 'hover:bg-indigo-600');
+            btn.classList.add('bg-indigo-600', 'hover:bg-indigo-700');
+        } else {
+            btn.innerHTML = '🔽 Sembunyikan Panel';
+            btn.classList.remove('bg-indigo-600', 'hover:bg-indigo-700');
+            btn.classList.add('bg-indigo-500', 'hover:bg-indigo-600');
+        }
+    }
+
+    // ==================== BIAYA TAMBAHAN ====================
+    function getExtraSettings() {
+        return {
+            packaging: parseNum('costPackaging'),
+            sticker: parseNum('costSticker'),
+            switchAcc: parseNum('costSwitch'),
+            rejectPercent: parseNum('rejectPercent')
+        };
+    }
+
+    /**
+     * Hitung biaya tambahan berdasarkan mode:
+     *  - 'full'        : reject + packaging + sticker + switch
+     *  - 'reject-only' : hanya reject
+     *  - 'none'        : semua 0
+     */
+    function getExtraCosts(materialCost, extra, mode) {
+        mode = mode || 'full';
+        if (mode === 'none') {
+            return {
+                reject: 0,
+                packaging: 0,
+                sticker: 0,
+                switchAcc: 0,
+                rejectPercent: 0,
+                total: 0,
+                mode: 'none'
+            };
+        }
+        if (mode === 'reject-only') {
+            const rejectCost = Math.round(materialCost * (extra.rejectPercent / 100));
+            return {
+                reject: rejectCost,
+                packaging: 0,
+                sticker: 0,
+                switchAcc: 0,
+                rejectPercent: extra.rejectPercent,
+                total: rejectCost,
+                mode: 'reject-only'
+            };
+        }
+        // full
+        const rejectCost = Math.round(materialCost * (extra.rejectPercent / 100));
+        const totalExtra = rejectCost + extra.packaging + extra.sticker + extra.switchAcc;
+        return {
+            reject: rejectCost,
+            packaging: extra.packaging,
+            sticker: extra.sticker,
+            switchAcc: extra.switchAcc,
+            rejectPercent: extra.rejectPercent,
+            total: totalExtra,
+            mode: 'full'
+        };
+    }
+
+    // ==================== UTIL ====================
+    function escapeHTML(str) {
+        return String(str).replace(/[&<>"']/g, m => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+        }[m]));
+    }
+
+    function numFromStr(v) {
+        if (v === '' || v == null) return 0;
+        const n = parseFloat(String(v).replace(',', '.'));
+        return isNaN(n) ? 0 : n;
+    }
+
+    function parseNum(id) {
+        const el = document.getElementById(id);
+        if (!el) return 0;
+        return numFromStr(el.value);
+    }
+    function parseInputVal(el) { return numFromStr(el.value); }
+
+    function genId() {
+        if (window.crypto && crypto.randomUUID) return crypto.randomUUID();
+        return 'id_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 9);
+    }
+
+    function formatTime(hoursTotal) {
+        const h = Math.floor(hoursTotal);
+        const m = Math.round((hoursTotal - h) * 60);
+        return `${h}j ${m}m`;
+    }
+
+    function getDateStr() {
+        const d = new Date();
+        return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+    }
+
+    function downloadFile(content, filename, mimeType) {
+        const blob = new Blob([content], { type: mimeType });
+        const link = document.createElement('a');
+        const url = URL.createObjectURL(blob);
+        link.setAttribute('href', url);
+        link.setAttribute('download', filename);
+        link.style.visibility = 'hidden';
+        document.body.appendChild(link);
+        link.click();
+        document.body.removeChild(link);
+        URL.revokeObjectURL(url);
+    }
+
+    // ==================== TOAST ====================
+    function showToast(message, type = 'success') {
+        const container = document.getElementById('toastContainer');
+        const colors = { success: 'bg-green-500', error: 'bg-red-500', info: 'bg-blue-500', warning: 'bg-yellow-500' };
+        const icons = { success: '✅', error: '❌', info: 'ℹ️', warning: '⚠️' };
+        const toast = document.createElement('div');
+        toast.className = `${colors[type]} text-white px-4 py-3 rounded-lg shadow-lg toast-anim flex items-center gap-2 min-w-[250px] max-w-md`;
+        const i = document.createElement('span'); i.textContent = icons[type];
+        const m = document.createElement('span'); m.textContent = message;
+        toast.appendChild(i); toast.appendChild(m);
+        container.appendChild(toast);
+        setTimeout(() => {
+            toast.style.opacity = '0';
+            toast.style.transition = 'opacity 0.3s';
+            setTimeout(() => toast.remove(), 300);
+        }, 3000);
+    }
+    window.showToast = showToast;
+
+    // ==================== LOGIN ====================
+    const loginScreen = document.getElementById('loginScreen');
+    const mainApp = document.getElementById('mainApp');
+    const loginForm = document.getElementById('loginForm');
+    const loginError = document.getElementById('loginError');
+
+    async function checkSession() {
+        if (sessionStorage.getItem(SESSION_KEY) === 'authenticated') {
+            loginScreen.classList.add('hidden');
+            mainApp.classList.remove('hidden');
+            document.getElementById('loggedUser').textContent = AUTH_USERNAME;
+            if (!isInitialized) initApp();
+        } else {
+            loginScreen.classList.remove('hidden');
+            mainApp.classList.add('hidden');
+        }
+    }
+
+    loginForm.addEventListener('submit', async function (e) {
+        e.preventDefault();
+        const btn = document.getElementById('loginBtn');
+        btn.disabled = true;
+        try {
+            const user = document.getElementById('loginUsername').value.trim();
+            const pass = document.getElementById('loginPassword').value;
+            const ok = (user === AUTH_USERNAME) && (await verifyPassword(pass));
+            if (ok) {
+                sessionStorage.setItem(SESSION_KEY, 'authenticated');
+                loginError.classList.add('hidden');
+                loginScreen.classList.add('hidden');
+                mainApp.classList.remove('hidden');
+                document.getElementById('loggedUser').textContent = user;
+                document.getElementById('loginPassword').value = '';
+                showToast('Login berhasil!', 'success');
+                if (!isInitialized) initApp();
+            } else {
+                loginError.classList.remove('hidden');
+                showToast('Username atau password salah!', 'error');
+            }
+        } finally {
+            btn.disabled = false;
+        }
+    });
+
+    function logout() {
+        if (settingsDirty) {
+            if (!confirm('⚠️ Ada perubahan pengaturan yang belum disimpan. Yakin logout?')) return;
+        }
+        if (confirm('Yakin ingin logout?')) {
+            sessionStorage.removeItem(SESSION_KEY);
+            location.reload();
+        }
+    }
+    window.logout = logout;
+
+    // ==================== MODAL GANTI PASSWORD ====================
+    const changePasswordModal = document.getElementById('changePasswordModal');
+    const changePasswordForm = document.getElementById('changePasswordForm');
+    const changePwMessage = document.getElementById('changePwMessage');
+
+    function openChangePasswordModal() {
+        changePasswordForm.reset();
+        changePwMessage.classList.add('hidden');
+        changePwMessage.className = 'hidden text-sm p-2 rounded border';
+        changePasswordModal.classList.remove('hidden');
+        document.getElementById('oldPassword').focus();
+    }
+    window.openChangePasswordModal = openChangePasswordModal;
+
+    function closeChangePasswordModal() { changePasswordModal.classList.add('hidden'); }
+    window.closeChangePasswordModal = closeChangePasswordModal;
+
+    function showChangePwMessage(msg, type) {
+        changePwMessage.textContent = msg;
+        changePwMessage.className = `text-sm p-2 rounded border ${
+            type === 'error' ? 'bg-red-50 text-red-600 border-red-200' : 'bg-green-50 text-green-600 border-green-200'
+        }`;
+        changePwMessage.classList.remove('hidden');
+    }
+
+    changePasswordForm.addEventListener('submit', async function (e) {
+        e.preventDefault();
+        const oldPw = document.getElementById('oldPassword').value;
+        const newPw = document.getElementById('newPassword').value;
+        const confirmPw = document.getElementById('confirmPassword').value;
+
+        if (!(await verifyPassword(oldPw))) return showChangePwMessage('❌ Password lama salah!', 'error');
+        if (newPw.length < 4) return showChangePwMessage('❌ Password baru minimal 4 karakter!', 'error');
+        if (newPw !== confirmPw) return showChangePwMessage('❌ Konfirmasi password tidak cocok!', 'error');
+        if (await verifyPassword(newPw)) return showChangePwMessage('❌ Password baru tidak boleh sama dengan yang lama!', 'error');
+
+        await setActivePassword(newPw);
+        showChangePwMessage('✅ Password berhasil diubah! Logout otomatis...', 'success');
+        setTimeout(() => {
+            closeChangePasswordModal();
+            showToast('Password berhasil diubah! Silakan login ulang.', 'success');
+            setTimeout(() => {
+                sessionStorage.removeItem(SESSION_KEY);
+                location.reload();
+            }, 1200);
+        }, 1000);
+    });
+
+    changePasswordModal.addEventListener('click', e => {
+        if (e.target === changePasswordModal) closeChangePasswordModal();
+    });
+    document.addEventListener('keydown', e => {
+        if (e.key === 'Escape' && !changePasswordModal.classList.contains('hidden')) closeChangePasswordModal();
+    });
+
+    // ==================== MASTER FILAMEN ====================
+    function loadFilaments() {
+        try {
+            const raw = localStorage.getItem(FILAMENTS_KEY);
+            if (raw) {
+                const arr = JSON.parse(raw);
+                if (Array.isArray(arr) && arr.length > 0) {
+                    filaments = arr
+                        .filter(f => f && f.name != null)
+                        .map(f => ({
+                            id: f.id || genId(),
+                            name: String(f.name),
+                            price: Number(f.price) || 0
+                        }));
+                    return;
+                }
+            }
+        } catch (e) {}
+        filaments = [
+            { id: genId(), name: 'PLA', price: 180000 },
+            { id: genId(), name: 'PETG', price: 190000 },
+            { id: genId(), name: 'PLA Generic', price: 150000 }
+        ];
+        saveFilaments();
+    }
+
+    function saveFilaments() {
+        try { localStorage.setItem(FILAMENTS_KEY, JSON.stringify(filaments)); }
+        catch (e) { showToast('Gagal menyimpan filamen', 'warning'); }
+    }
+
+    function getFilamentById(id) { return filaments.find(f => f.id === id) || null; }
+
+    function isFilamentUsed(id) {
+        return jobs.some(j => (j.filaments || []).some(f => f.filamentId === id));
+    }
+
+    function renderFilamentList() {
+        const list = document.getElementById('filamentList');
+        const empty = document.getElementById('filamentEmpty');
+        list.innerHTML = '';
+
+        if (filaments.length === 0) {
+            empty.classList.remove('hidden');
+            updatePanelSummary('panelFilament');
+            return;
+        }
+        empty.classList.add('hidden');
+
+        filaments.forEach(f => {
+            const used = isFilamentUsed(f.id);
+            const div = document.createElement('div');
+            div.className = 'flex items-center justify-between gap-2 bg-purple-50 border border-purple-100 rounded p-2';
+            div.innerHTML = `
+                <div class="flex-1 min-w-0">
+                    <div class="font-semibold text-gray-800 text-sm truncate">${escapeHTML(f.name)}</div>
+                    <div class="text-xs text-purple-700">${formatter.format(f.price)} /kg</div>
+                </div>
+                <div class="flex gap-1">
+                    <button type="button" data-action="edit-fil" data-id="${escapeHTML(f.id)}" title="Edit" class="text-amber-500 hover:text-amber-700 font-bold px-1">✎</button>
+                    <button type="button" data-action="delete-fil" data-id="${escapeHTML(f.id)}" title="Hapus" class="text-red-500 hover:text-red-700 font-bold px-1" ${used ? 'disabled style="opacity:.4;cursor:not-allowed"' : ''}>&times;</button>
+                </div>
+            `;
+            list.appendChild(div);
+        });
+        updatePanelSummary('panelFilament');
+    }
+
+    document.getElementById('filamentForm').addEventListener('submit', function (e) {
+        e.preventDefault();
+        const name = document.getElementById('filamentName').value.trim();
+        const price = numFromStr(document.getElementById('filamentPrice').value);
+
+        if (!name) return showToast('Nama filamen wajib diisi!', 'error');
+        if (price <= 0) return showToast('Harga harus > 0!', 'error');
+
+        filaments.push({ id: genId(), name, price });
+        saveFilaments();
+        document.getElementById('filamentForm').reset();
+        document.getElementById('filamentName').focus();
+        renderFilamentList();
+        refreshFormSelects();
+        renderTable();
+        showToast(`Filamen "${name}" ditambahkan!`, 'success');
+    });
+
+    function editFilament(id) {
+        const f = filaments.find(x => x.id === id);
+        if (!f) return showToast('Filamen tidak ditemukan!', 'error');
+        const newName = prompt('Nama filamen:', f.name);
+        if (newName === null) return;
+        if (!newName.trim()) return showToast('Nama tidak boleh kosong', 'error');
+        const newPriceStr = prompt('Harga per kg (Rp):', f.price);
+        if (newPriceStr === null) return;
+        const newPrice = numFromStr(newPriceStr);
+        if (newPrice <= 0) return showToast('Harga harus > 0', 'error');
+
+        f.name = newName.trim();
+        f.price = newPrice;
+        saveFilaments();
+        renderFilamentList();
+        refreshFormSelects();
+        renderTable();
+        showToast('Filamen diperbarui!', 'success');
+    }
+
+    function deleteFilament(id) {
+        if (isFilamentUsed(id)) return showToast('Filamen ini sedang digunakan. Hapus dari semua cetakan dulu.', 'warning');
+        if (filaments.length === 1) return showToast('Minimal harus ada 1 filamen.', 'warning');
+        const f = filaments.find(x => x.id === id);
+        if (!f) return;
+        if (!confirm(`Hapus filamen "${f.name}"?`)) return;
+        filaments = filaments.filter(x => x.id !== id);
+        saveFilaments();
+        renderFilamentList();
+        refreshFormSelects();
+        renderTable();
+        showToast('Filamen dihapus.', 'info');
+    }
+
+    // ==================== PENYIMPANAN JOBS ====================
+    function saveData(silent = false) {
+        try {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(jobs));
+            if (!silent) showToast('Data berhasil disimpan.', 'success');
+            return true;
+        } catch (e) {
+            showToast('Gagal menyimpan data: ' + e.message, 'error');
+            return false;
+        }
+    }
+
+    function loadData() {
+        try {
+            const raw = localStorage.getItem(STORAGE_KEY);
+            const arr = raw ? JSON.parse(raw) : [];
+            if (!Array.isArray(arr)) { jobs = []; return; }
+            jobs = arr.map(migrateJob).filter(Boolean);
+        } catch (e) { jobs = []; }
+    }
+
+    function migrateJob(job) {
+        if (!job || typeof job !== 'object') return null;
+
+        if (!job.id || typeof job.id !== 'string') {
+            job.id = genId();
+        }
+
+        // Pastikan extraMode valid
+        if (!job.extraMode || !EXTRA_MODE_LABELS[job.extraMode]) {
+            job.extraMode = 'full';
+        }
+
+        if (Array.isArray(job.filaments) && job.filaments.length > 0) {
+            if (job.purgeMinutes == null) job.purgeMinutes = 0;
+            if (typeof job.name !== 'string') job.name = 'Tanpa Nama';
+            if (typeof job.time !== 'number' || isNaN(job.time)) job.time = 0;
+            return job;
+        }
+        if (job.weight != null || job.purgeWeight != null) {
+            const fallback = filaments[0] || { id: '' };
+            return {
+                id: job.id || genId(),
+                name: job.name || 'Tanpa Nama',
+                colorCount: job.colorCount || '1',
+                time: Number(job.time) || 0,
+                purgeMinutes: Number(job.purgeMinutes) || 0,
+                extraMode: job.extraMode || 'full',
+                filaments: [{
+                    filamentId: fallback.id,
+                    weight: Number(job.weight) || 0,
+                    purgeWeight: Number(job.purgeWeight) || 0
+                }]
+            };
+        }
+        return null;
+    }
+
+    // ==================== PENYIMPANAN SETTINGS ====================
+    function saveSettings(silent = false) {
+        const s = {
+            electricityTariff: document.getElementById('electricityTariff').value,
+            machinePower: document.getElementById('machinePower').value,
+            depreciationRate: document.getElementById('depreciationRate').value,
+            marginMin: document.getElementById('marginMin').value,
+            marginMax: document.getElementById('marginMax').value,
+            costPackaging: document.getElementById('costPackaging').value,
+            costSticker: document.getElementById('costSticker').value,
+            costSwitch: document.getElementById('costSwitch').value,
+            rejectPercent: document.getElementById('rejectPercent').value
+        };
+        try {
+            localStorage.setItem(SETTINGS_KEY, JSON.stringify(s));
+            settingsDirty = false;
+            updateSettingsDirtyUI();
+            updatePanelSummary('panelSettings');
+            if (!silent) showToast('Pengaturan berhasil disimpan!', 'success');
+            return true;
+        } catch (e) {
+            showToast('Gagal menyimpan pengaturan: ' + e.message, 'error');
+            return false;
+        }
+    }
+
+    function saveSettingsManual() {
+        if (!validateSettings()) return;
+        if (saveSettings(false)) {
+            renderTable();
+        }
+    }
+    window.saveSettingsManual = saveSettingsManual;
+
+    function loadSettings() {
+        try {
+            const raw = localStorage.getItem(SETTINGS_KEY);
+            if (raw) {
+                const s = JSON.parse(raw);
+                Object.keys(s).forEach(k => {
+                    const el = document.getElementById(k);
+                    if (el) el.value = s[k];
+                });
+            }
+        } catch (e) {}
+        settingsDirty = false;
+        updateSettingsDirtyUI();
+        updateExtraPreview();
+        updatePanelSummary('panelSettings');
+    }
+
+    function updateSettingsDirtyUI() {
+        const badge = document.getElementById('settingsDirtyBadge');
+        const btn = document.getElementById('saveSettingsBtn');
+        if (!badge || !btn) return;
+        if (settingsDirty) {
+            badge.classList.remove('hidden');
+            btn.classList.add('ring-2', 'ring-amber-400', 'animate-pulse');
+        } else {
+            badge.classList.add('hidden');
+            btn.classList.remove('ring-2', 'ring-amber-400', 'animate-pulse');
+        }
+    }
+
+    function markSettingsDirty() {
+        if (!settingsDirty) {
+            settingsDirty = true;
+            updateSettingsDirtyUI();
+        }
+    }
+
+    function clearAllData() {
+        if (settingsDirty) {
+            if (!confirm('⚠️ Ada perubahan pengaturan yang belum disimpan. Lanjutkan hapus semua data cetakan?')) return;
+        }
+        if (confirm('⚠️ Yakin hapus SEMUA data cetakan? Tidak dapat dibatalkan.')) {
+            jobs = [];
+            try { localStorage.removeItem(STORAGE_KEY); } catch (e) {}
+            currentPage = 1;
+            searchQuery = '';
+            sortKey = '';
+            sortDir = 'asc';
+            document.getElementById('searchBox').value = '';
+            renderTable();
+            renderFilamentList();
+            showToast('Semua data cetakan dihapus.', 'info');
+        }
+    }
+    window.clearAllData = clearAllData;
+
+    // ==================== KALKULASI ====================
+    function getSettings() {
+        return {
+            tariff: parseNum('electricityTariff'),
+            power: parseNum('machinePower'),
+            depreciation: parseNum('depreciationRate'),
+            marginMin: parseNum('marginMin') || 2,
+            marginMax: parseNum('marginMax') || 3
+        };
+    }
+
+    function calcJob(job, settings) {
+        let materialCost = 0;
+        let totalWeight = 0;
+        const breakdown = [];
+
+        (job.filaments || []).forEach(f => {
+            const fil = getFilamentById(f.filamentId);
+            const w = (parseFloat(f.weight) || 0) + (parseFloat(f.purgeWeight) || 0);
+            if (w <= 0) return;
+            totalWeight += w;
+            const price = fil ? fil.price : 0;
+            const cost = w * (price / 1000);
+            materialCost += cost;
+            breakdown.push({
+                name: fil ? fil.name : '⚠ Tidak diketahui',
+                weight: w,
+                baseWeight: parseFloat(f.weight) || 0,
+                purgeWeight: parseFloat(f.purgeWeight) || 0,
+                price, cost
+            });
+        });
+
+        const electricityCost = settings.power * job.time * settings.tariff;
+        const depreciationCost = job.time * settings.depreciation;
+        const extra = getExtraSettings();
+        const extraCosts = getExtraCosts(materialCost, extra, job.extraMode || 'full');
+        const total = materialCost + electricityCost + depreciationCost + extraCosts.total;
+
+        return {
+            materialCost, electricityCost, depreciationCost, extraCosts,
+            total,
+            sellMin: total * settings.marginMin,
+            sellMax: total * settings.marginMax,
+            totalWeight, breakdown
+        };
+    }
+
+    function updateExtraPreview() {
+        const extra = getExtraSettings();
+        const sampleMaterial = 20000;
+        const extraCosts = getExtraCosts(sampleMaterial, extra, 'full');
+        const pr = document.getElementById('previewReject');
+        const pp = document.getElementById('previewPackaging');
+        const ps = document.getElementById('previewSticker');
+        const psw = document.getElementById('previewSwitch');
+        const pt = document.getElementById('previewExtraTotal');
+        if (pr) pr.textContent = formatter.format(extraCosts.reject);
+        if (pp) pp.textContent = formatter.format(extra.packaging);
+        if (ps) ps.textContent = formatter.format(extra.sticker);
+        if (psw) psw.textContent = formatter.format(extra.switchAcc);
+        if (pt) pt.textContent = formatter.format(extraCosts.total);
+    }
+
+    // ==================== FORM FILAMENT ROWS ====================
+    function updateFilamentSelect(selectEl, selectedId) {
+        selectEl.innerHTML = '';
+        if (filaments.length === 0) {
+            const o = document.createElement('option');
+            o.value = ''; o.textContent = '(Belum ada filamen)';
+            selectEl.appendChild(o);
+            return;
+        }
+        filaments.forEach(f => {
+            const o = document.createElement('option');
+            o.value = f.id;
+            o.textContent = `${f.name} — ${formatter.format(f.price)}/kg`;
+            if (f.id === selectedId) o.selected = true;
+            selectEl.appendChild(o);
+        });
+        if (selectedId && !filaments.find(f => f.id === selectedId)) {
+            selectEl.selectedIndex = 0;
+        }
+    }
+
+    function createFilamentRow(filamentId, weight, purgeWeight) {
+        const row = document.createElement('div');
+        row.className = 'filament-row flex flex-wrap gap-2 items-end bg-gray-50 p-2 rounded border border-gray-200';
+
+        const selectWrap = document.createElement('div');
+        selectWrap.className = 'flex-1 min-w-[180px]';
+        const lbl1 = document.createElement('label');
+        lbl1.className = 'block text-xs text-gray-500 mb-1';
+        lbl1.textContent = 'Filamen';
+        const sel = document.createElement('select');
+        sel.className = 'fil-select w-full border border-gray-300 rounded p-2 text-sm focus:ring-blue-500 focus:border-blue-500';
+        updateFilamentSelect(sel, filamentId || (filaments[0] && filaments[0].id));
+        selectWrap.appendChild(lbl1); selectWrap.appendChild(sel);
+
+        const wWrap = document.createElement('div');
+        wWrap.className = 'w-24';
+        const lbl2 = document.createElement('label');
+        lbl2.className = 'block text-xs text-gray-500 mb-1';
+        lbl2.textContent = 'Berat (g)';
+        const wInput = document.createElement('input');
+        wInput.type = 'text'; wInput.inputMode = 'decimal';
+        wInput.className = 'fil-weight w-full border border-gray-300 rounded p-2 text-sm focus:ring-blue-500 focus:border-blue-500';
+        wInput.placeholder = '0';
+        wInput.value = weight != null ? weight : '';
+        wWrap.appendChild(lbl2); wWrap.appendChild(wInput);
+
+        const pWrap = document.createElement('div');
+        pWrap.className = 'w-24';
+        const lbl3 = document.createElement('label');
+        lbl3.className = 'block text-xs text-gray-500 mb-1';
+        lbl3.textContent = 'Purge (g)';
+        const pInput = document.createElement('input');
+        pInput.type = 'text'; pInput.inputMode = 'decimal';
+        pInput.className = 'fil-purge w-full border border-gray-300 rounded p-2 text-sm focus:ring-blue-500 focus:border-blue-500';
+        pInput.placeholder = '0';
+        pInput.value = purgeWeight != null ? purgeWeight : 0;
+        pWrap.appendChild(lbl3); pWrap.appendChild(pInput);
+
+        const rm = document.createElement('button');
+        rm.type = 'button';
+        rm.className = 'text-red-500 hover:text-red-700 font-bold px-2 pb-2 text-lg leading-none';
+        rm.title = 'Hapus baris';
+        rm.textContent = '✕';
+        rm.onclick = () => { row.remove(); updateFilamentRowButtons(); };
+
+        row.appendChild(selectWrap);
+        row.appendChild(wWrap);
+        row.appendChild(pWrap);
+        row.appendChild(rm);
+        return row;
+    }
+
+    function updateFilamentRowButtons() {
+        const rows = document.querySelectorAll('#filamentRows .filament-row');
+        rows.forEach(r => {
+            const btn = r.querySelector('button');
+            if (btn) btn.disabled = rows.length <= 1;
+            if (btn) btn.style.opacity = rows.length <= 1 ? '0.35' : '1';
+        });
+    }
+
+    function addFilamentRowForm(filamentId, weight, purge) {
+        const container = document.getElementById('filamentRows');
+        container.appendChild(createFilamentRow(filamentId, weight, purge));
+        updateFilamentRowButtons();
+    }
+    window.addFilamentRowForm = addFilamentRowForm;
+
+    function clearFilamentRows() {
+        document.getElementById('filamentRows').innerHTML = '';
+    }
+
+    function refreshFormSelects() {
+        document.querySelectorAll('#filamentRows .fil-select').forEach(sel => {
+            updateFilamentSelect(sel, sel.value);
+        });
+    }
+
+    // ==================== EXTRA MODE UI ====================
+    function getSelectedExtraMode() {
+        const checked = document.querySelector('input[name="extraMode"]:checked');
+        return checked ? checked.value : 'full';
+    }
+
+    function setSelectedExtraMode(mode) {
+        if (!EXTRA_MODE_LABELS[mode]) mode = 'full';
+        const radios = document.querySelectorAll('input[name="extraMode"]');
+        radios.forEach(r => { r.checked = (r.value === mode); });
+        updateExtraModeUI();
+    }
+
+    function updateExtraModeUI() {
+        const mode = getSelectedExtraMode();
+        document.querySelectorAll('.extra-mode-option').forEach(el => {
+            el.classList.toggle('selected', el.dataset.mode === mode);
+        });
+    }
+    window.updateExtraModeUI = updateExtraModeUI;
+
+    // ==================== VALIDASI ====================
+    function validateSettings() {
+        const min = parseNum('marginMin');
+        const max = parseNum('marginMax');
+        if (min <= 0 || max <= 0) { showToast('Margin harus > 0!', 'warning'); return false; }
+        if (min > max) { showToast('Margin minimal tidak boleh > maksimal!', 'warning'); return false; }
+
+        const rejectPct = parseNum('rejectPercent');
+        if (rejectPct < 0) { showToast('Persentase reject tidak boleh negatif!', 'warning'); return false; }
+
+        const extras = ['costPackaging', 'costSticker', 'costSwitch'];
+        for (const id of extras) {
+            if (parseNum(id) < 0) { showToast('Biaya tambahan tidak boleh negatif!', 'warning'); return false; }
+        }
+
+        const tariff = parseNum('electricityTariff');
+        const power = parseNum('machinePower');
+        const depreciation = parseNum('depreciationRate');
+        if (tariff < 0 || power < 0 || depreciation < 0) {
+            showToast('Tarif/daya/depresiasi tidak boleh negatif!', 'warning');
+            return false;
+        }
+        return true;
+    }
+
+    function collectFormFilaments() {
+        const rows = document.querySelectorAll('#filamentRows .filament-row');
+        if (rows.length === 0) return { ok: false, msg: 'Tambahkan minimal 1 filamen.' };
+        const list = [];
+        for (const row of rows) {
+            const fid = row.querySelector('.fil-select').value;
+            const w = parseInputVal(row.querySelector('.fil-weight'));
+            const p = parseInputVal(row.querySelector('.fil-purge'));
+            if (!fid) return { ok: false, msg: 'Pilih filamen untuk setiap baris.' };
+            if (w < 0 || p < 0) return { ok: false, msg: 'Berat tidak boleh negatif.' };
+            if (w <= 0) return { ok: false, msg: 'Setiap filamen harus punya berat > 0.' };
+            list.push({ filamentId: fid, weight: w, purgeWeight: p });
+        }
+        return { ok: true, list };
+    }
+
+    // ==================== ADD / EDIT JOB ====================
+    function addOrUpdateJob() {
+        if (!validateSettings()) return;
+
+        if (settingsDirty) {
+            const proceed = confirm('⚠️ Ada perubahan pengaturan yang belum disimpan. Simpan dulu?');
+            if (proceed) {
+                saveSettings(true);
+            }
+        }
+
+        const name = document.getElementById('jobName').value.trim() || 'Tanpa Nama';
+        const colorCount = document.getElementById('colorCount').value;
+        const hours = parseNum('jobHours');
+        const minutes = parseNum('jobMinutes');
+        const purgeMinutes = parseNum('purgeMinutes');
+        const extraMode = getSelectedExtraMode();
+
+        if (hours < 0 || minutes < 0 || purgeMinutes < 0) return showToast('Waktu tidak boleh negatif!', 'error');
+        if (minutes >= 60) return showToast('Menit harus < 60.', 'error');
+        if (purgeMinutes >= 60) return showToast('Menit purge harus < 60.', 'error');
+
+        const timeInHours = hours + (minutes / 60) + (purgeMinutes / 60);
+        if (timeInHours <= 0) return showToast('Total waktu harus > 0!', 'error');
+
+        const fc = collectFormFilaments();
+        if (!fc.ok) return showToast(fc.msg, 'error');
+
+        const editingId = document.getElementById('editingId').value;
+
+        if (editingId) {
+            const idx = jobs.findIndex(j => j.id === editingId);
+            if (idx !== -1) {
+                jobs[idx] = {
+                    ...jobs[idx],
+                    name, colorCount, time: timeInHours,
+                    purgeMinutes,
+                    extraMode,
+                    filaments: fc.list
+                };
+                if (saveData(true)) {
+                    showToast(`"${name}" berhasil diperbarui & disimpan!`, 'success');
+                }
+            } else {
+                showToast('Data yang diedit tidak ditemukan!', 'error');
+            }
+        } else {
+            jobs.push({
+                id: genId(), name, colorCount, time: timeInHours,
+                purgeMinutes,
+                extraMode,
+                filaments: fc.list
+            });
+            if (saveData(true)) {
+                showToast(`"${name}" berhasil ditambahkan & disimpan!`, 'success');
+            }
+        }
+
+        resetForm();
+        renderTable();
+        renderFilamentList();
+    }
+
+    function resetForm() {
+        document.getElementById('jobForm').reset();
+        document.getElementById('colorCount').value = '1';
+        document.getElementById('purgeMinutes').value = 0;
+        document.getElementById('editingId').value = '';
+        document.getElementById('formTitle').textContent = '➕ Tambah Cetakan';
+        document.getElementById('submitBtn').textContent = '➕ Tambah ke Tabel';
+        document.getElementById('cancelEditBtn').classList.add('hidden');
+        clearFilamentRows();
+        addFilamentRowForm();
+        setSelectedExtraMode('full');
+    }
+
+    function startEdit(id) {
+        const job = jobs.find(j => j.id === id);
+        if (!job) {
+            showToast('Data tidak ditemukan! Mungkin sudah dihapus.', 'error');
+            return;
+        }
+
+        document.getElementById('editingId').value = job.id;
+        document.getElementById('jobName').value = job.name;
+        document.getElementById('colorCount').value = job.colorCount;
+
+        const totalMin = Math.round(job.time * 60);
+        document.getElementById('jobHours').value = Math.floor(totalMin / 60);
+        document.getElementById('jobMinutes').value = totalMin % 60;
+
+        document.getElementById('purgeMinutes').value = job.purgeMinutes != null ? job.purgeMinutes : 0;
+
+        // Restore mode biaya tambahan
+        setSelectedExtraMode(job.extraMode || 'full');
+
+        clearFilamentRows();
+        (job.filaments || []).forEach(f => {
+            addFilamentRowForm(f.filamentId, f.weight, f.purgeWeight);
+        });
+        if ((job.filaments || []).length === 0) addFilamentRowForm();
+
+        document.getElementById('formTitle').textContent = '✏️ Edit Cetakan';
+        document.getElementById('submitBtn').textContent = '💾 Simpan Perubahan';
+        document.getElementById('cancelEditBtn').classList.remove('hidden');
+        document.getElementById('jobName').focus();
+        window.scrollTo({ top: document.getElementById('jobForm').offsetTop - 100, behavior: 'smooth' });
+        showToast(`Edit mode: "${job.name}"`, 'info');
+    }
+
+    function cancelEdit() {
+        if (confirm('Batalkan edit? Perubahan tidak akan disimpan.')) {
+            resetForm();
+            showToast('Edit dibatalkan.', 'info');
+        }
+    }
+    window.cancelEdit = cancelEdit;
+
+    // ==================== DELETE / DUPLICATE ====================
+    function deleteJob(id) {
+        const job = jobs.find(j => j.id === id);
+        if (!job) return showToast('Data tidak ditemukan!', 'error');
+        if (!confirm(`⚠️ Yakin hapus cetakan "${job.name}"? Tindakan ini tidak dapat dibatalkan.`)) return;
+
+        jobs = jobs.filter(j => j.id !== id);
+        const saved = saveData(true);
+        if (saved) {
+            showToast(`"${job.name}" berhasil dihapus & disimpan.`, 'success');
+        }
+
+        const filtered = getFilteredJobs();
+        const totalPages = Math.ceil(filtered.length / rowsPerPage);
+        if (currentPage > totalPages && totalPages > 0) currentPage = totalPages;
+        if (currentPage < 1) currentPage = 1;
+        renderTable();
+        renderFilamentList();
+    }
+
+    function duplicateJob(id) {
+        const job = jobs.find(j => j.id === id);
+        if (!job) return showToast('Data tidak ditemukan!', 'error');
+        const copy = {
+            ...job, id: genId(), name: job.name + ' (Copy)',
+            purgeMinutes: job.purgeMinutes || 0,
+            extraMode: job.extraMode || 'full',
+            filaments: (job.filaments || []).map(f => ({ ...f }))
+        };
+        jobs.push(copy);
+        if (saveData(true)) {
+            showToast(`"${job.name}" berhasil diduplikasi & disimpan!`, 'success');
+        }
+        setTimeout(() => {
+            const filtered = getFilteredJobs();
+            currentPage = Math.max(1, Math.ceil(filtered.length / rowsPerPage));
+            renderTable();
+        }, 0);
+    }
+
+    function changePage(page) { currentPage = page; renderTable(); }
+    window.changePage = changePage;
+
+    function handleSort(key) {
+        if (sortKey === key) sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+        else { sortKey = key; sortDir = 'asc'; }
+        currentPage = 1;
+        renderTable();
+    }
+
+    function getFilteredJobs() {
+        let list = jobs;
+        if (searchQuery) {
+            const q = searchQuery.toLowerCase();
+            list = list.filter(j => j.name.toLowerCase().includes(q));
+        }
+        if (sortKey) {
+            const settings = getSettings();
+            const withCost = list.map(job => ({ job, cost: calcJob(job, settings) }));
+            withCost.sort((a, b) => {
+                let va, vb;
+                switch (sortKey) {
+                    case 'name': va = a.job.name.toLowerCase(); vb = b.job.name.toLowerCase(); break;
+                    case 'weight': va = a.cost.totalWeight; vb = b.cost.totalWeight; break;
+                    case 'time': va = a.job.time; vb = b.job.time; break;
+                    case 'extra': va = a.cost.extraCosts.total; vb = b.cost.extraCosts.total; break;
+                    case 'total': va = a.cost.total; vb = b.cost.total; break;
+                    case 'sell': va = a.cost.sellMin; vb = b.cost.sellMin; break;
+                    default: va = 0; vb = 0;
+                }
+                if (va < vb) return sortDir === 'asc' ? -1 : 1;
+                if (va > vb) return sortDir === 'asc' ? 1 : -1;
+                return 0;
+            });
+            list = withCost.map(x => x.job);
+        }
+        return list;
+    }
+
+    // ==================== RENDER TABEL ====================
+    function updateSortIndicators() {
+        document.querySelectorAll('.sort-indicator').forEach(el => {
+            el.textContent = '';
+            el.classList.remove('active');
+        });
+        if (sortKey) {
+            const el = document.querySelector(`.sort-indicator[data-ind="${sortKey}"]`);
+            if (el) {
+                el.textContent = sortDir === 'asc' ? '▲' : '▼';
+                el.classList.add('active');
+            }
+        }
+    }
+
+    function makeBadgesHTML(breakdown) {
+        if (!breakdown || breakdown.length === 0) return '<span class="text-gray-400 text-xs">-</span>';
+        return breakdown.map(b =>
+            `<span class="filament-badge" title="${escapeHTML(b.name)} • ${b.weight.toFixed(1)}g × ${formatter.format(b.price)}/kg = ${formatter.format(b.cost)}">${escapeHTML(b.name)} ${b.weight.toFixed(1)}g</span>`
+        ).join('');
+    }
+
+    function makeExtraBadgeHTML(extraCosts) {
+        const mode = extraCosts.mode || 'full';
+        if (mode === 'none') {
+            return `<span class="extra-badge extra-badge-none">Tanpa Extra</span>`;
+        }
+        if (mode === 'reject-only') {
+            return `<span class="extra-badge extra-badge-reject-only">Reject saja</span>`;
+        }
+        return `<span class="extra-badge extra-badge-full">Lengkap</span>`;
+    }
+
+    function makeExtraTitle(extraCosts) {
+        const mode = extraCosts.mode || 'full';
+        const label = EXTRA_MODE_LABELS[mode] || 'Lengkap';
+        if (mode === 'none') {
+            return `Mode: ${label}\nSemua biaya tambahan = Rp 0`;
+        }
+        if (mode === 'reject-only') {
+            return `Mode: ${label}\nReject (${extraCosts.rejectPercent}%): ${formatter.format(extraCosts.reject)}`;
+        }
+        return `Mode: ${label}\nReject (${extraCosts.rejectPercent}%): ${formatter.format(extraCosts.reject)}\nPackaging: ${formatter.format(extraCosts.packaging)}\nStiker: ${formatter.format(extraCosts.sticker)}\nSwitch: ${formatter.format(extraCosts.switchAcc)}`;
+    }
+
+    function renderTable() {
+        const tbody = document.getElementById('tableBody');
+        const emptyState = document.getElementById('emptyState');
+        const pagination = document.getElementById('pagination');
+        const tableInfo = document.getElementById('tableInfo');
+
+        tbody.innerHTML = '';
+        pagination.innerHTML = '';
+
+        const filteredJobs = getFilteredJobs();
+
+        if (filteredJobs.length === 0) {
+            emptyState.style.display = 'block';
+            pagination.style.display = 'none';
+            tableInfo.textContent = jobs.length === 0 ? '0 data' : `0 hasil dari ${jobs.length} data`;
+            updateSortIndicators();
+            return;
+        } else {
+            emptyState.style.display = 'none';
+            pagination.style.display = 'flex';
+        }
+
+        const settings = getSettings();
+        const totalPages = Math.ceil(filteredJobs.length / rowsPerPage);
+        if (currentPage > totalPages) currentPage = totalPages;
+        if (currentPage < 1) currentPage = 1;
+
+        const startIndex = (currentPage - 1) * rowsPerPage;
+        const endIndex = Math.min(startIndex + rowsPerPage, filteredJobs.length);
+        const paginatedJobs = filteredJobs.slice(startIndex, endIndex);
+
+        paginatedJobs.forEach((job, index) => {
+            const c = calcJob(job, settings);
+            const sellPriceStr = `${formatter.format(c.sellMin)} - ${formatter.format(c.sellMax)}`;
+            const colorBadge = job.colorCount === '1'
+                ? `<span class="text-xs text-gray-500">1 Warna</span>`
+                : `<span class="text-xs font-bold bg-purple-100 text-purple-700 px-2 py-1 rounded-full">${escapeHTML(job.colorCount)} Warna</span>`;
+
+            const extraTitle = makeExtraTitle(c.extraCosts);
+            const extraBadge = makeExtraBadgeHTML(c.extraCosts);
+            const extraAmount = c.extraCosts.total > 0
+                ? `<div class="text-orange-600 font-medium">${formatter.format(c.extraCosts.total)}</div>`
+                : `<div class="text-gray-400 text-xs">Rp 0</div>`;
+
+            const tr = document.createElement('tr');
+            tr.className = 'border-b hover:bg-gray-50 transition duration-150';
+            tr.innerHTML = `
+                <td class="px-3 py-3">${startIndex + index + 1}</td>
+                <td class="px-3 py-3 font-medium text-gray-900">${escapeHTML(job.name)}</td>
+                <td class="px-3 py-3 text-center">${colorBadge}</td>
+                <td class="px-3 py-3" style="max-width:220px;">${makeBadgesHTML(c.breakdown)}</td>
+                <td class="px-3 py-3 text-right"><span class="font-bold text-gray-800">${c.totalWeight.toFixed(1)} g</span></td>
+                <td class="px-3 py-3 text-right">${formatTime(job.time)}</td>
+                <td class="px-3 py-3 text-right">${formatter.format(c.materialCost)}</td>
+                <td class="px-3 py-3 text-right">${formatter.format(c.electricityCost)}</td>
+                <td class="px-3 py-3 text-right">${formatter.format(c.depreciationCost)}</td>
+                <td class="px-3 py-3 text-right cursor-help" title="${extraTitle}">
+                    ${extraBadge}
+                    ${extraAmount}
+                </td>
+                <td class="px-3 py-3 text-right font-bold text-blue-600">${formatter.format(c.total)}</td>
+                <td class="px-3 py-3 text-right font-bold text-green-600">${sellPriceStr}</td>
+                <td class="px-3 py-3 text-center whitespace-nowrap col-action">
+                    <button type="button" data-action="edit" data-id="${escapeHTML(job.id)}" title="Edit" class="text-amber-500 hover:text-amber-700 font-bold text-lg mr-2">✎</button>
+                    <button type="button" data-action="duplicate" data-id="${escapeHTML(job.id)}" title="Duplikat" class="text-blue-500 hover:text-blue-700 font-bold text-lg mr-2">⧉</button>
+                    <button type="button" data-action="delete" data-id="${escapeHTML(job.id)}" title="Hapus" class="text-red-500 hover:text-red-700 font-bold text-lg">&times;</button>
+                </td>
+            `;
+            tbody.appendChild(tr);
+        });
+
+        let grandTotal = 0, grandSellMin = 0, grandSellMax = 0, grandWeight = 0, grandExtra = 0;
+        filteredJobs.forEach(job => {
+            const c = calcJob(job, settings);
+            grandTotal += c.total;
+            grandSellMin += c.sellMin;
+            grandSellMax += c.sellMax;
+            grandWeight += c.totalWeight;
+            grandExtra += c.extraCosts.total;
+        });
+
+        const trTotal = document.createElement('tr');
+        trTotal.className = 'bg-gray-100 font-bold border-t-2 border-gray-300';
+        trTotal.innerHTML = `
+            <td class="px-3 py-4" colspan="4">TOTAL KESELURUHAN (${filteredJobs.length} data)</td>
+            <td class="px-3 py-4 text-right">${grandWeight.toFixed(1)} g</td>
+            <td class="px-3 py-4 col-action" colspan="3"></td>
+            <td class="px-3 py-4 text-right text-orange-700">${formatter.format(grandExtra)}</td>
+            <td class="px-3 py-4 text-right text-blue-800 text-lg">${formatter.format(grandTotal)}</td>
+            <td class="px-3 py-4 text-right text-green-800 text-lg">${formatter.format(grandSellMin)} - ${formatter.format(grandSellMax)}</td>
+            <td class="px-3 py-4 col-action"></td>
+        `;
+        tbody.appendChild(trTotal);
+
+        tableInfo.textContent = `Menampilkan ${startIndex + 1} - ${endIndex} dari ${filteredJobs.length} data`;
+
+        pagination.innerHTML = `
+            <button type="button" onclick="changePage(${currentPage - 1})" ${currentPage === 1 ? 'disabled' : ''} class="px-3 py-1 rounded border ${currentPage === 1 ? 'bg-gray-200 text-gray-400 cursor-not-allowed' : 'bg-white text-blue-600 hover:bg-blue-50'}">Sebelumnya</button>
+            <span class="text-sm text-gray-600 mx-2">Halaman ${currentPage} dari ${totalPages}</span>
+            <button type="button" onclick="changePage(${currentPage + 1})" ${currentPage === totalPages ? 'disabled' : ''} class="px-3 py-1 rounded border ${currentPage === totalPages ? 'bg-gray-200 text-gray-400 cursor-not-allowed' : 'bg-white text-blue-600 hover:bg-blue-50'}">Selanjutnya</button>
+        `;
+
+        updateSortIndicators();
+    }
+
+    // ==================== EXPORT HELPERS ====================
+    function csvCell(val) {
+        let s = String(val == null ? '' : val);
+        if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
+        if (/[",\n\r]/.test(s)) s = '"' + s.replace(/"/g, '""') + '"';
+        return s;
+    }
+
+    function filamentSummaryText(breakdown) {
+        if (!breakdown || breakdown.length === 0) return '-';
+        return breakdown.map(b => `${b.name} ${b.weight.toFixed(1)}g`).join(' + ');
+    }
+
+    // ==================== EXPORT CSV ====================
+    function exportCSV() {
+        if (jobs.length === 0) { showToast('Tidak ada data.', 'warning'); return; }
+        const settings = getSettings();
+        const filtered = getFilteredJobs();
+
+        let csv = '\uFEFF';
+        csv += 'No,Nama Cetakan,Jumlah Warna,Mode Biaya Tambahan,Filamen,Total Berat (g),Waktu (Jam),Material (Rp),Listrik (Rp),Mesin (Rp),Biaya Tambahan (Rp),Total Biaya (Rp),Estimasi Jual Min (Rp),Estimasi Jual Max (Rp)\n';
+
+        let gt = 0, gmin = 0, gmax = 0, gextra = 0;
+        filtered.forEach((job, i) => {
+            const c = calcJob(job, settings);
+            gt += c.total; gmin += c.sellMin; gmax += c.sellMax; gextra += c.extraCosts.total;
+            const modeLabel = EXTRA_MODE_LABELS[job.extraMode || 'full'] || 'Lengkap';
+            csv += [
+                i + 1,
+                csvCell(job.name),
+                csvCell(job.colorCount),
+                csvCell(modeLabel),
+                csvCell(filamentSummaryText(c.breakdown)),
+                c.totalWeight.toFixed(1),
+                job.time.toFixed(2),
+                Math.round(c.materialCost),
+                Math.round(c.electricityCost),
+                Math.round(c.depreciationCost),
+                Math.round(c.extraCosts.total),
+                Math.round(c.total),
+                Math.round(c.sellMin),
+                Math.round(c.sellMax)
+            ].join(',') + '\n';
+        });
+
+        csv += `\n,,,,,,,,,,,"TOTAL","${Math.round(gt)}","${Math.round(gmin)} - ${Math.round(gmax)}"\n`;
+
+        const extra = getExtraSettings();
+        csv += `\nRINCIAN BIAYA TAMBAHAN PER CETAKAN (MODE LENGKAP)\n`;
+        csv += `Reject (${extra.rejectPercent}% material),Packaging,Stiker & Tinta,Switch/Gantungan\n`;
+        csv += `${extra.rejectPercent}%,${extra.packaging},${extra.sticker},${extra.switchAcc}\n`;
+
+        csv += `\nDAFTAR FILAMEN\n`;
+        filaments.forEach(f => { csv += `${csvCell(f.name)},${f.price}\n`; });
+        csv += `\nPENGATURAN\n`;
+        csv += `Tarif Listrik (Rp/kWh),${settings.tariff}\n`;
+        csv += `Daya Printer (kW),${settings.power}\n`;
+        csv += `Depresiasi Mesin (Rp/jam),${settings.depreciation}\n`;
+        csv += `Margin Minimal (x),${settings.marginMin}\n`;
+        csv += `Margin Maksimal (x),${settings.marginMax}\n`;
+
+        downloadFile(csv, `kalkulasi-3d_${getDateStr()}.csv`, 'text/csv;charset=utf-8;');
+        showToast('CSV berhasil di-download!', 'success');
+    }
+    window.exportCSV = exportCSV;
+
+    // ==================== EXPORT EXCEL ====================
+    function exportExcel() {
+        if (jobs.length === 0) { showToast('Tidak ada data.', 'warning'); return; }
+        if (typeof XLSX === 'undefined') { showToast('Library Excel gagal dimuat.', 'error'); return; }
+
+        const settings = getSettings();
+        const filtered = getFilteredJobs();
+
+        const data = [
+            ['LAPORAN KALKULASI BIAYA 3D PRINTING - ANYCUBIC KOBRA X'],
+            [`Tanggal Export: ${new Date().toLocaleString('id-ID')}`],
+            [`Operator: ${AUTH_USERNAME}`],
+            [],
+            ['No', 'Nama Cetakan', 'Jumlah Warna', 'Mode Biaya Tambahan', 'Filamen', 'Total Berat (g)', 'Waktu (Jam)',
+             'Material (Rp)', 'Listrik (Rp)', 'Mesin (Rp)', 'Biaya Tambahan (Rp)', 'Total Biaya (Rp)',
+             'Estimasi Jual Min (Rp)', 'Estimasi Jual Max (Rp)']
+        ];
+
+        let gt = 0, gmin = 0, gmax = 0, gextra = 0;
+        filtered.forEach((job, i) => {
+            const c = calcJob(job, settings);
+            gt += c.total; gmin += c.sellMin; gmax += c.sellMax; gextra += c.extraCosts.total;
+            let safeName = String(job.name);
+            if (/^[=+\-@\t\r]/.test(safeName)) safeName = "'" + safeName;
+
+            data.push([
+                i + 1, safeName, job.colorCount,
+                EXTRA_MODE_LABELS[job.extraMode || 'full'] || 'Lengkap',
+                filamentSummaryText(c.breakdown),
+                parseFloat(c.totalWeight.toFixed(1)),
+                parseFloat(job.time.toFixed(2)),
+                Math.round(c.materialCost),
+                Math.round(c.electricityCost),
+                Math.round(c.depreciationCost),
+                Math.round(c.extraCosts.total),
+                Math.round(c.total),
+                Math.round(c.sellMin),
+                Math.round(c.sellMax)
+            ]);
+        });
+
+        data.push([]);
+        data.push(['', 'TOTAL KESELURUHAN', '', '', '', '', '', '', '', '', '',
+            Math.round(gt), Math.round(gmin), Math.round(gmax)]);
+        data.push([]);
+        const extra = getExtraSettings();
+        data.push(['RINCIAN BIAYA TAMBAHAN PER CETAKAN (MODE LENGKAP):']);
+        data.push(['Reject (% dari material)', extra.rejectPercent + '%']);
+        data.push(['Packaging (bubblewrap, freebies, mailer)', extra.packaging]);
+        data.push(['Stiker & Tinta', extra.sticker]);
+        data.push(['Switch / Gantungan', extra.switchAcc]);
+        data.push([]);
+        data.push(['DAFTAR FILAMEN:']);
+        filaments.forEach(f => data.push([f.name, f.price]));
+        data.push([]);
+        data.push(['PENGATURAN:']);
+        data.push(['Tarif Listrik (Rp/kWh)', settings.tariff]);
+        data.push(['Daya Printer (kW)', settings.power]);
+        data.push(['Depresiasi Mesin (Rp/jam)', settings.depreciation]);
+        data.push(['Margin Minimal (x)', settings.marginMin]);
+        data.push(['Margin Maksimal (x)', settings.marginMax]);
+
+        const ws = XLSX.utils.aoa_to_sheet(data);
+        ws['!cols'] = [
+            { wch: 5 }, { wch: 28 }, { wch: 12 }, { wch: 22 }, { wch: 32 }, { wch: 14 }, { wch: 11 },
+            { wch: 14 }, { wch: 13 }, { wch: 13 }, { wch: 16 }, { wch: 15 },
+            { wch: 17 }, { wch: 17 }
+        ];
+        if (!ws['!merges']) ws['!merges'] = [];
+        ws['!merges'].push({ s: { r: 0, c: 0 }, e: { r: 0, c: 13 } });
+        ws['!merges'].push({ s: { r: 1, c: 0 }, e: { r: 1, c: 13 } });
+        ws['!merges'].push({ s: { r: 2, c: 0 }, e: { r: 2, c: 13 } });
+
+        const wb = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(wb, ws, 'Kalkulasi');
+        XLSX.writeFile(wb, `kalkulasi-3d_${getDateStr()}.xlsx`);
+        showToast('Excel berhasil di-download!', 'success');
+    }
+    window.exportExcel = exportExcel;
+
+    // ==================== PRINT ====================
+    function generatePrintContent() {
+        if (mainApp.classList.contains('hidden')) return;
+
+        const settings = getSettings();
+        const filtered = getFilteredJobs();
+        const total = filtered.length;
+        const extra = getExtraSettings();
+
+        let html = `
+            <div class="print-header">
+                <h1>Laporan Kalkulasi Biaya 3D Printing</h1>
+                <p>Anycubic Kobra X &nbsp;|&nbsp; Dicetak: ${escapeHTML(new Date().toLocaleString('id-ID'))} &nbsp;|&nbsp; Operator: ${escapeHTML(AUTH_USERNAME)}</p>
+            </div>
+            <table>
+                <colgroup>
+                    <col style="width:3%">
+                    <col style="width:12%">
+                    <col style="width:4%">
+                    <col style="width:11%">
+                    <col style="width:15%">
+                    <col style="width:6%">
+                    <col style="width:5%">
+                    <col style="width:8%">
+                    <col style="width:6%">
+                    <col style="width:6%">
+                    <col style="width:8%">
+                    <col style="width:8%">
+                    <col style="width:8%">
+                </colgroup>
+                <thead>
+                    <tr>
+                        <th>No</th>
+                        <th>Nama Cetakan</th>
+                        <th>Warna</th>
+                        <th>Mode Biaya</th>
+                        <th>Filamen</th>
+                        <th>Berat (g)</th>
+                        <th>Waktu</th>
+                        <th>Material</th>
+                        <th>Listrik</th>
+                        <th>Mesin</th>
+                        <th>Biaya Tambahan</th>
+                        <th>Total Biaya</th>
+                        <th>Estimasi Jual</th>
+                    </tr>
+                </thead>
+                <tbody>
+        `;
+
+        let gt = 0, gmin = 0, gmax = 0, gweight = 0, gextra = 0;
+        filtered.forEach((job, i) => {
+            const c = calcJob(job, settings);
+            gt += c.total; gmin += c.sellMin; gmax += c.sellMax; gweight += c.totalWeight; gextra += c.extraCosts.total;
+
+            const filText = c.breakdown.map(b =>
+                `${escapeHTML(b.name)} ${b.weight.toFixed(1)}g @ ${formatter.format(b.price)}/kg`
+            ).join('<br>');
+
+            const modeShort = EXTRA_MODE_SHORT[c.extraCosts.mode] || 'Lengkap';
+            const extraCell = c.extraCosts.total > 0
+                ? formatter.format(c.extraCosts.total)
+                : '<span style="color:#888">Rp 0</span>';
+
+            html += `<tr>
+                <td class="text-center">${i + 1}</td>
+                <td>${escapeHTML(job.name)}</td>
+                <td class="text-center">${escapeHTML(job.colorCount)}</td>
+                <td class="text-center" style="font-size:6.5pt">${modeShort}</td>
+                <td style="font-size:6.5pt">${filText || '-'}</td>
+                <td class="text-right">${c.totalWeight.toFixed(1)}</td>
+                <td class="text-center">${formatTime(job.time)}</td>
+                <td class="text-right">${formatter.format(c.materialCost)}</td>
+                <td class="text-right">${formatter.format(c.electricityCost)}</td>
+                <td class="text-right">${formatter.format(c.depreciationCost)}</td>
+                <td class="text-right">${extraCell}</td>
+                <td class="text-right"><b>${formatter.format(c.total)}</b></td>
+                <td class="text-right">${formatter.format(c.sellMin)} - ${formatter.format(c.sellMax)}</td>
+            </tr>`;
+        });
+
+        // Total row: 13 kolom
+        // colspan 5 (No, Nama, Warna, Mode, Filamen) = 5
+        // Berat = 1 → total 6
+        // colspan 4 (Waktu, Material, Listrik, Mesin) = 4 → total 10
+        // Extra = 1 → 11
+        // Total = 1 → 12
+        // Jual = 1 → 13
+        html += `
+                <tr class="total-row">
+                    <td colspan="5" class="text-right">TOTAL KESELURUHAN (${total} data)</td>
+                    <td class="text-right">${gweight.toFixed(1)}</td>
+                    <td colspan="4"></td>
+                    <td class="text-right">${formatter.format(gextra)}</td>
+                    <td class="text-right">${formatter.format(gt)}</td>
+                    <td class="text-right">${formatter.format(gmin)} - ${formatter.format(gmax)}</td>
+                </tr>
+                </tbody>
+            </table>
+            <div class="settings-note">
+                <b>Keterangan Mode Biaya Tambahan:</b>
+                <b>Lengkap</b> = Reject + Packaging + Stiker + Switch &nbsp;|&nbsp;
+                <b>Reject saja</b> = Hanya reject (% material) &nbsp;|&nbsp;
+                <b>Tanpa extra</b> = Semua biaya tambahan Rp 0
+                <br><br>
+                <b>Biaya Tambahan Default (Mode Lengkap):</b>
+                Reject ${extra.rejectPercent}% material +
+                Packaging ${formatter.format(extra.packaging)} +
+                Stiker ${formatter.format(extra.sticker)} +
+                Switch ${formatter.format(extra.switchAcc)}
+                <br><br>
+                <b>Daftar Filamen:</b>
+                ${filaments.map(f => `${escapeHTML(f.name)} = ${formatter.format(f.price)}/kg`).join(' &nbsp;|&nbsp; ')}
+                <br><br>
+                <b>Pengaturan:</b>
+                Tarif Listrik ${formatter.format(settings.tariff)}/kWh &nbsp;|&nbsp;
+                Daya ${settings.power} kW &nbsp;|&nbsp;
+                Depresiasi ${formatter.format(settings.depreciation)}/jam &nbsp;|&nbsp;
+                Margin ${settings.marginMin}x – ${settings.marginMax}x
+            </div>
+            <div class="footer-note">
+                © 2026 Sigit - HDTeam-Lab | GNU GPL v3.0 | v3.9.0
+            </div>
+        `;
+
+        document.getElementById('printArea').innerHTML = html;
+    }
+
+    function printTable() {
+        if (jobs.length === 0) { showToast('Tidak ada data untuk di-print.', 'warning'); return; }
+
+        const isMobile = /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+        if (isMobile) {
+            showToast('💡 Di halaman print, pilih Orientasi: Landscape', 'info');
+        }
+
+        generatePrintContent();
+        setTimeout(() => window.print(), 150);
+    }
+    window.printTable = printTable;
+
+    // ==================== INIT ====================
+    function initApp() {
+        if (isInitialized) return;
+        isInitialized = true;
+
+        loadFilaments();
+        loadData();
+        loadSettings();
+        loadPanelState();
+
+        renderFilamentList();
+        renderTable();
+
+        applyPanelState('panelFilament');
+        applyPanelState('panelSettings');
+        updateToggleAllButton();
+
+        // --- Form submit ---
+        document.getElementById('jobForm').addEventListener('submit', function (e) {
+            e.preventDefault();
+            addOrUpdateJob();
+        });
+
+        if (document.querySelectorAll('#filamentRows .filament-row').length === 0) {
+            addFilamentRowForm();
+        }
+
+        // --- Settings input dirty tracking ---
+        document.querySelectorAll('.settings-input').forEach(input => {
+            input.addEventListener('input', () => {
+                markSettingsDirty();
+                if (['costPackaging', 'costSticker', 'costSwitch', 'rejectPercent'].includes(input.id)) {
+                    updateExtraPreview();
+                }
+                updatePanelSummary('panelSettings');
+            });
+        });
+
+        // --- Keyboard shortcut Ctrl+S ---
+        document.addEventListener('keydown', e => {
+            if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+                e.preventDefault();
+                if (settingsDirty) {
+                    saveSettingsManual();
+                }
+            }
+        });
+
+        // --- Warning before unload ---
+        window.addEventListener('beforeunload', e => {
+            if (settingsDirty) {
+                e.preventDefault();
+                e.returnValue = '';
+                return '';
+            }
+        });
+
+        // --- Search ---
+        document.getElementById('searchBox').addEventListener('input', e => {
+            searchQuery = e.target.value.trim();
+            currentPage = 1;
+            renderTable();
+        });
+
+        // --- Sort headers ---
+        document.querySelectorAll('th.sortable').forEach(th => {
+            th.addEventListener('click', () => handleSort(th.dataset.sort));
+        });
+
+        // --- Extra mode radio listener ---
+        document.querySelectorAll('input[name="extraMode"]').forEach(radio => {
+            radio.addEventListener('change', updateExtraModeUI);
+        });
+        updateExtraModeUI();
+
+        // --- Event delegation: tombol aksi tabel ---
+        document.getElementById('tableBody').addEventListener('click', function (e) {
+            const btn = e.target.closest('button[data-action]');
+            if (!btn) return;
+            const action = btn.dataset.action;
+            const id = btn.dataset.id;
+
+            if (action === 'edit') startEdit(id);
+            else if (action === 'duplicate') duplicateJob(id);
+            else if (action === 'delete') deleteJob(id);
+        });
+
+        // --- Event delegation: tombol aksi daftar filamen ---
+        document.getElementById('filamentList').addEventListener('click', function (e) {
+            const btn = e.target.closest('button[data-action]');
+            if (!btn) return;
+            const action = btn.dataset.action;
+            const id = btn.dataset.id;
+
+            if (action === 'edit-fil') editFilament(id);
+            else if (action === 'delete-fil') deleteFilament(id);
+        });
+    }
+
+    checkSession();
+});
+</script>
+</body>
+</html>
